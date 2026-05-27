@@ -3,7 +3,7 @@ package com.plutonium.backbone.worldgen;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.plutonium.backbone.bridge.NativeInterface;
-import com.plutonium.backbone.client.PlutoniumCompositor;
+import com.plutonium.backbone.client.PlutoniumBackend;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
@@ -180,7 +180,7 @@ public final class WorldGenTestCommand {
             return 0;
         }
 
-        long enginePtr = PlutoniumCompositor.ensureBackendForWorldgen();
+        long enginePtr = PlutoniumBackend.ensureBackendForWorldgen();
         if (enginePtr == 0L) {
             src.sendFailure(Component.literal(
                     "[Plutonium] GPU density compare FAILED - native backend is not available."));
@@ -310,7 +310,7 @@ public final class WorldGenTestCommand {
             return 0;
         }
 
-        long enginePtr = PlutoniumCompositor.ensureBackendForWorldgen();
+        long enginePtr = PlutoniumBackend.ensureBackendForWorldgen();
         if (enginePtr == 0L) {
             src.sendFailure(Component.literal(
                     "[Plutonium] GPU cell compare FAILED - native backend is not available."));

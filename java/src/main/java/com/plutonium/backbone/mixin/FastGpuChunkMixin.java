@@ -1,7 +1,7 @@
 package com.plutonium.backbone.mixin;
 
 import com.plutonium.backbone.bridge.NativeInterface;
-import com.plutonium.backbone.client.PlutoniumCompositor;
+import com.plutonium.backbone.client.PlutoniumBackend;
 import com.plutonium.backbone.common.Config;
 import com.plutonium.backbone.worldgen.BytecodeCompiler;
 import com.plutonium.backbone.worldgen.DensityProgramSerializer;
@@ -123,9 +123,9 @@ public abstract class FastGpuChunkMixin {
         if (!GpuWorldgenState.isAstCompatible()) {
             return;
         }
-        long enginePtr = PlutoniumCompositor.getBackendPtr();
+        long enginePtr = PlutoniumBackend.getBackendPtr();
         if (enginePtr == 0) {
-            enginePtr = PlutoniumCompositor.ensureBackendForWorldgen();
+            enginePtr = PlutoniumBackend.ensureBackendForWorldgen();
             if (enginePtr == 0) {
                 return;
             }

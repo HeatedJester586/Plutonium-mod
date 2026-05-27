@@ -5,17 +5,9 @@
   "compatibilityLevel": "JAVA_17",
   "refmap": "plutonium.refmap.json",
   "mixins": [
-    "ChunkMapMixin",
     "FastGpuChunkMixin",
-    "LevelMixin",
     "NoiseInterpolatorAccessor",
     "NoiseChunkGpuDensityMixin"
-  ],
-  "client": [
-    "LevelRendererAccessor",
-    "LevelRendererSolidLayerMixin",
-    "RenderChunkInfoAccessor",
-    "VideoSettingsScreenMixin"
   ],
   "injectors": {
     "defaultRequire": 1
