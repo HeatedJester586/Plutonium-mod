@@ -88,8 +88,9 @@ public final class ChunkUploadWorker {
             t.setPriority(Thread.MIN_PRIORITY);
             return t;
         };
-        executor = Executors.newFixedThreadPool(2, factory);
-        LOGGER.info("[Plutonium/Pipeline] chunk upload worker pool started (2 background threads).");
+        int threads = Math.max(2, Math.min(6, Runtime.getRuntime().availableProcessors() / 2));
+        executor = Executors.newFixedThreadPool(threads, factory);
+        LOGGER.info("[Plutonium/Pipeline] chunk upload worker pool started ({} background threads).", threads);
     }
 
     public static synchronized void shutdown() {

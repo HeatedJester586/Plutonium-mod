@@ -29,7 +29,10 @@ public final class CudaPipeline {
     private static final int CHUNK_HEIGHT = NativeInterface.PIPELINE_CHUNK_HEIGHT;
     private static final int FIRST_BOOT_RADIUS = 1;
     private static final int REQUEST_UPLOAD_BUDGET = 4;
+    private static final int REQUEST_UPLOAD_BUDGET_FAST = 16;
     private static final int MAX_IN_FLIGHT_UPLOADS = 32;
+    private static final int MAX_IN_FLIGHT_UPLOADS_FAST = 96;
+    private static final double FAST_MODE_SPEED_THRESHOLD_SQ = 4.0;
     private static final int HANDOFF_STABLE_FRAMES = 3;
     private static final int VISIBLE_UPLOAD_HALO_RADIUS = 1;
     private static final int INACTIVE_VISIBLE_REQUEST_INTERVAL = 4;
@@ -41,6 +44,9 @@ public final class CudaPipeline {
     private static final double COVERAGE_ON_THRESHOLD  = 0.95;
     private static final double COVERAGE_OFF_THRESHOLD = 0.80;
     private static final int MAX_MISSING_VISIBLE_COLUMNS = 64;
+    private static final int PREDICTIVE_LOOKAHEAD_TICKS = 60;
+    private static final int PREDICTIVE_CORRIDOR_RADIUS = 2;
+    private static final int MAX_PREDICTIVE_ADDS_PER_TICK = 16;
 
     private static final Set<Long> uploadedColumns = new HashSet<>();
     private static final LinkedHashSet<Long> requestedColumns = new LinkedHashSet<>();
@@ -140,7 +146,7 @@ public final class CudaPipeline {
                 if (uploadedColumns.contains(key) || inFlightSubmissions.contains(key)) {
                     continue;
                 }
-                if (inFlightSubmissions.size() >= MAX_IN_FLIGHT_UPLOADS) {
+                if (inFlightSubmissions.size() >= currentInFlightLimit()) {
                     continue;
                 }
                 if (ChunkUploadWorker.submit(mc.level, uploadEpoch, cx, cz)) {
@@ -149,7 +155,13 @@ public final class CudaPipeline {
             }
         }
 
-        // 3. Submit chunks the renderer marked as visible-but-missing.
+        // 3. At high velocity, queue chunks the player will reach soon but
+        // can't see yet. Without this, FIFO + frustum-only requests means we
+        // only start uploading a chunk once it enters the camera frustum —
+        // at jet speed that's already too late.
+        expandRequestsAlongVelocity(mc);
+
+        // 4. Submit chunks the renderer marked as visible-but-missing.
         processRequestedColumns(mc, mc.level);
 
         // 4. Diagnostic: run the canonical-metadata audit and log via SLF4J.
@@ -197,7 +209,8 @@ public final class CudaPipeline {
      */
     private static void drainCompletedUploads() {
         int processed = 0;
-        while (processed < REQUEST_UPLOAD_BUDGET) {
+        int budget = currentUploadBudget();
+        while (processed < budget) {
             ChunkUploadWorker.Result r = ChunkUploadWorker.pollCompleted();
             if (r == null) {
                 break;
@@ -514,6 +527,62 @@ public final class CudaPipeline {
     }
 
     /**
+     * Add chunks along the player's projected flight path to the request
+     * queue. Pre-loads what the renderer hasn't asked for yet so the upload
+     * pipeline can start working before the chunk enters the frustum.
+     *
+     * Only enqueues chunks the client already has — we can't summon chunks
+     * the server hasn't sent. ChunkUploadWorker.submit() rejects unloaded
+     * ones anyway, but checking up front avoids wasted submissions and
+     * pointless retries.
+     */
+    private static void expandRequestsAlongVelocity(Minecraft mc) {
+        if (!VelocityChunkPrioritizer.hasMeaningfulVelocity()) {
+            return;
+        }
+
+        double playerX = mc.player.getX();
+        double playerZ = mc.player.getZ();
+        double futureX = playerX + VelocityChunkPrioritizer.velocityX() * PREDICTIVE_LOOKAHEAD_TICKS;
+        double futureZ = playerZ + VelocityChunkPrioritizer.velocityZ() * PREDICTIVE_LOOKAHEAD_TICKS;
+
+        int playerCX = Math.floorDiv((int) Math.floor(playerX), 16);
+        int playerCZ = Math.floorDiv((int) Math.floor(playerZ), 16);
+        int futureCX = Math.floorDiv((int) Math.floor(futureX), 16);
+        int futureCZ = Math.floorDiv((int) Math.floor(futureZ), 16);
+
+        int travelDX = futureCX - playerCX;
+        int travelDZ = futureCZ - playerCZ;
+        int steps = Math.max(1, Math.max(Math.abs(travelDX), Math.abs(travelDZ)));
+        int added = 0;
+
+        synchronized (requestedColumns) {
+            for (int step = 1; step <= steps && added < MAX_PREDICTIVE_ADDS_PER_TICK; step++) {
+                double t = (double) step / (double) steps;
+                int cx = playerCX + (int) Math.round(travelDX * t);
+                int cz = playerCZ + (int) Math.round(travelDZ * t);
+
+                for (int rz = -PREDICTIVE_CORRIDOR_RADIUS; rz <= PREDICTIVE_CORRIDOR_RADIUS && added < MAX_PREDICTIVE_ADDS_PER_TICK; rz++) {
+                    for (int rx = -PREDICTIVE_CORRIDOR_RADIUS; rx <= PREDICTIVE_CORRIDOR_RADIUS && added < MAX_PREDICTIVE_ADDS_PER_TICK; rx++) {
+                        int tcx = cx + rx;
+                        int tcz = cz + rz;
+                        long key = chunkKey(tcx, tcz);
+                        if (uploadedColumns.contains(key) || inFlightSubmissions.contains(key)) {
+                            continue;
+                        }
+                        if (mc.level.getChunkSource().getChunk(tcx, tcz, false) == null) {
+                            continue;
+                        }
+                        if (requestedColumns.add(key)) {
+                            added++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Submit chunks the renderer flagged as visible-but-missing to the
      * background extractor. No render-thread work beyond the bookkeeping;
      * actual block iteration happens on a worker.
@@ -524,7 +593,7 @@ public final class CudaPipeline {
      * whatever was queued first instead of what's most urgent.
      */
     private static void processRequestedColumns(Minecraft mc, ClientLevel level) {
-        int available = Math.min(REQUEST_UPLOAD_BUDGET, MAX_IN_FLIGHT_UPLOADS - inFlightSubmissions.size());
+        int available = Math.min(currentUploadBudget(), currentInFlightLimit() - inFlightSubmissions.size());
         if (available <= 0) {
             return;
         }
@@ -565,6 +634,20 @@ public final class CudaPipeline {
                 inFlightSubmissions.add(key);
             }
         }
+    }
+
+    private static boolean isFastMode() {
+        double vx = VelocityChunkPrioritizer.velocityX();
+        double vz = VelocityChunkPrioritizer.velocityZ();
+        return (vx * vx + vz * vz) > FAST_MODE_SPEED_THRESHOLD_SQ;
+    }
+
+    private static int currentUploadBudget() {
+        return isFastMode() ? REQUEST_UPLOAD_BUDGET_FAST : REQUEST_UPLOAD_BUDGET;
+    }
+
+    private static int currentInFlightLimit() {
+        return isFastMode() ? MAX_IN_FLIGHT_UPLOADS_FAST : MAX_IN_FLIGHT_UPLOADS;
     }
 
     private static long chunkKey(int x, int z) {
