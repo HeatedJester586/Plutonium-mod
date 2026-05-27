@@ -1,0 +1,29 @@
+# Claude Code / IDE settings
+.claude/
+.idea/
+
+# C++ / Visual Studio build outputs
+x64/
+Debug/
+Release/
+*.dll
+*.lib
+*.exp
+*.obj
+*.pdb
+*.ilk
+*.aps
+.vs/
+*.user
+ipch/
+
+# Java / Gradle
+.gradle/
+build/
+out/
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# Forge generated cache
+java/src/generated/resources/.cache/

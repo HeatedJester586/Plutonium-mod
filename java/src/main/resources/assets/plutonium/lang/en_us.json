@@ -1,0 +1,8 @@
+{
+  "plutonium.options.chunk_builder": "Chunk Builder",
+  "plutonium.options.worldgen_accelerator": "World Generation",
+  "plutonium.options.mesh_profile": "Mesh Quality",
+  "plutonium.options.lod_start_distance": "LOD Start Distance",
+  "plutonium.options.cpu_threads": "Builder Threads",
+  "plutonium.options.backbone_renderer": "Backbone Renderer"
+}

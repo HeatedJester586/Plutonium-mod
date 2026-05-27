@@ -1,0 +1,31 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="All Rights Reserved"
+issueTrackerURL="http://my.issue.tracker/"
+
+[[mods]]
+# The Mod ID. This MUST match the string in your main Java file @Mod("...")
+modId="plutonium"
+version="1.0.0"
+displayName="Plutonium Backbone"
+displayURL="http://my.site/"
+logoFile="logo.png"
+credits="Tarik"
+authors="Tarik"
+description='''
+Native backbone (optional DX12/Vulkan compositor path) for client-side work. Defaults are chosen for compatibility with vanilla and third-party world generation: GPU chunk replacement stays off unless you opt in. Does not replace vanilla terrain by default.
+'''
+
+[[dependencies.plutonium]]
+modId="forge"
+mandatory=true
+versionRange="[47,)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.plutonium]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.21)"
+ordering="NONE"
+side="BOTH"
