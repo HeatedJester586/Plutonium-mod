@@ -458,8 +458,7 @@ public final class CudaPipeline {
             return false;
         }
         return NativeInterface.nPipelinePendingSwapCount() == 0
-                && NativeInterface.nPipelineActiveMeshJobCount() == 0
-                && ChunkUploadWorker.completedCount() == 0;
+                && NativeInterface.nPipelineActiveMeshJobCount() == 0;
     }
 
     private static CompiledCoverage nativeCompiledCoverage(Set<Long> visibleColumns) {
