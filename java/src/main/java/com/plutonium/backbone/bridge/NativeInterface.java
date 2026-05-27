@@ -173,6 +173,16 @@ public final class NativeInterface {
     public static native int nPipelineCountCompiledColumns(long[] keys, int count);
 
     /**
+     * Returns any error / log messages the C++ side has queued since the last
+     * call. Messages may be tagged with a single-char severity followed by
+     * '|' (E=error, W=warn, D=debug). Untagged messages route to info.
+     *
+     * The DLL is expected to keep these in a thread-safe ring buffer; one
+     * call drains and clears it.
+     */
+    public static native String[] nDrainNativeLogs();
+
+    /**
      * Build a GPU face-culled mesh for one 16x16x16 chunk section.
      * blockData18: direct ByteBuffer, exactly 5832 bytes (18x18x18 padded block IDs)
      * outVerts:    direct ByteBuffer, capacity >= maxVerts * 16 bytes

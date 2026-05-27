@@ -17,8 +17,80 @@
 #include "ComputeEngine.h"
 #include "NativeMesher.h"
 #include "chunk_pipeline.h"
+#include "plutonium_log_queue.h"
+#include <deque>
+#include <mutex>
+#include <string>
 
-#define PLUTO_LOG(fmt, ...) fprintf(stdout, "[Plutonium/JNI] " fmt "\n", ##__VA_ARGS__); fflush(stdout)
+namespace {
+    constexpr size_t kLogQueueMaxEntries = 1024;
+    std::mutex g_log_queue_mutex;
+    std::deque<std::string> g_log_queue;
+    bool g_log_queue_overflowed = false;
+}
+
+extern "C" void pluto_log_queue_push(const char* msg) {
+    if (!msg) return;
+    std::lock_guard<std::mutex> lk(g_log_queue_mutex);
+    if (g_log_queue.size() >= kLogQueueMaxEntries) {
+        g_log_queue.pop_front();
+        g_log_queue_overflowed = true;
+    }
+    g_log_queue.emplace_back(msg);
+}
+
+extern "C" char** pluto_log_queue_drain(int* count) {
+    std::lock_guard<std::mutex> lk(g_log_queue_mutex);
+    if (g_log_queue.empty() && !g_log_queue_overflowed) {
+        if (count) *count = 0;
+        return nullptr;
+    }
+    size_t extra = g_log_queue_overflowed ? 1 : 0;
+    size_t total = g_log_queue.size() + extra;
+    char** arr = (char**)std::malloc(total * sizeof(char*));
+    if (!arr) {
+        if (count) *count = 0;
+        return nullptr;
+    }
+    size_t i = 0;
+    if (g_log_queue_overflowed) {
+        const char* warn = "W|native log queue overflowed; some messages dropped";
+        size_t len = std::strlen(warn);
+        char* copy = (char*)std::malloc(len + 1);
+        if (copy) { std::memcpy(copy, warn, len + 1); arr[i++] = copy; }
+        g_log_queue_overflowed = false;
+    }
+    for (const std::string& s : g_log_queue) {
+        char* copy = (char*)std::malloc(s.size() + 1);
+        if (!copy) { arr[i++] = nullptr; continue; }
+        std::memcpy(copy, s.c_str(), s.size() + 1);
+        arr[i++] = copy;
+    }
+    g_log_queue.clear();
+    if (count) *count = (int)i;
+    return arr;
+}
+
+extern "C" void pluto_log_queue_free_string(char* s) { if (s) std::free(s); }
+extern "C" void pluto_log_queue_free_array(char** arr) { if (arr) std::free(arr); }
+
+// fprintf is preserved so users running the engine outside Minecraft still
+// see logs on their terminal; the queue push is what surfaces them inside
+// Forge via NativeLogBridge.drain().
+static inline void pluto_log_impl(const char* tag, const char* fmt, ...) {
+    char body[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(body, sizeof(body), fmt, ap);
+    va_end(ap);
+    fprintf(stdout, "[%s] %s\n", tag, body);
+    fflush(stdout);
+    char queued[1100];
+    snprintf(queued, sizeof(queued), "[%s] %s", tag, body);
+    pluto_log_queue_push(queued);
+}
+
+#define PLUTO_LOG(fmt, ...) pluto_log_impl("Plutonium/JNI", fmt, ##__VA_ARGS__)
 
 static ComputeEngine* g_engine = nullptr;
 static PipelineHardwareContext g_chunk_pipeline_hw;
@@ -678,6 +750,27 @@ extern "C" {
         }
         return (jint)plutonium::meshSectionParallel(
             blocks, out, (int)maxVerts, (float)ox, (float)oy, (float)oz);
+    }
+
+    JNIEXPORT jobjectArray JNICALL
+        Java_com_plutonium_backbone_bridge_NativeInterface_nDrainNativeLogs(JNIEnv* env, jclass) {
+        int count = 0;
+        char** msgs = pluto_log_queue_drain(&count);
+        if (!msgs || count <= 0) {
+            if (msgs) pluto_log_queue_free_array(msgs);
+            return env->NewObjectArray(0, env->FindClass("java/lang/String"), nullptr);
+        }
+        jclass stringClass = env->FindClass("java/lang/String");
+        jobjectArray result = env->NewObjectArray(count, stringClass, nullptr);
+        for (int i = 0; i < count; ++i) {
+            const char* s = msgs[i] ? msgs[i] : "";
+            jstring js = env->NewStringUTF(s);
+            env->SetObjectArrayElement(result, i, js);
+            env->DeleteLocalRef(js);
+            pluto_log_queue_free_string(msgs[i]);
+        }
+        pluto_log_queue_free_array(msgs);
+        return result;
     }
 
 } // extern "C"

@@ -120,6 +120,7 @@ public final class CudaPipeline {
 
         currentTickNum++;
 
+        NativeLogBridge.drain();
         VelocityChunkPrioritizer.updatePlayerKinematics(mc.player.getX(), mc.player.getZ());
 
         // 0. Process due re-submissions. The first extract for a chunk often

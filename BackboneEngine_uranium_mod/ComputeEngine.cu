@@ -23,9 +23,25 @@
 //4. Graphics/Compute Headers (Last)
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
+#include <cstdarg>
+#include <cstdio>
 #include "ComputeEngine.h"
+#include "plutonium_log_queue.h"
 
-#define PLUTO_LOG(fmt, ...) fprintf(stdout, "[Plutonium/Native] " fmt "\n", ##__VA_ARGS__); fflush(stdout)
+static inline void pluto_native_log_impl(const char* fmt, ...) {
+    char body[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(body, sizeof(body), fmt, ap);
+    va_end(ap);
+    fprintf(stdout, "[Plutonium/Native] %s\n", body);
+    fflush(stdout);
+    char queued[1100];
+    snprintf(queued, sizeof(queued), "[Plutonium/Native] %s", body);
+    pluto_log_queue_push(queued);
+}
+
+#define PLUTO_LOG(fmt, ...) pluto_native_log_impl(fmt, ##__VA_ARGS__)
 
 static int s_deviceIndex =0;
 
