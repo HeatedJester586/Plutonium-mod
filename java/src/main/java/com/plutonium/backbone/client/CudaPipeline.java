@@ -114,6 +114,8 @@ public final class CudaPipeline {
 
         currentTickNum++;
 
+        VelocityChunkPrioritizer.updatePlayerKinematics(mc.player.getX(), mc.player.getZ());
+
         // 0. Process due re-submissions. The first extract for a chunk often
         // races with MC's bulk chunk population (network thread populating the
         // PalettedContainer mid-snapshot). The re-submit after a short delay
@@ -148,7 +150,7 @@ public final class CudaPipeline {
         }
 
         // 3. Submit chunks the renderer marked as visible-but-missing.
-        processRequestedColumns(mc.level);
+        processRequestedColumns(mc, mc.level);
 
         // 4. Diagnostic: run the canonical-metadata audit and log via SLF4J.
         // Native fprintf-to-stdout is swallowed by Forge in this configuration,
@@ -337,6 +339,7 @@ public final class CudaPipeline {
         handoffStableFrames = 0;
         handoffWaitLogSamples = 0;
         visibleRequestCalls = 0;
+        VelocityChunkPrioritizer.reset();
         BlockPropertyTableCompiler.invalidate();
     }
 
@@ -514,23 +517,44 @@ public final class CudaPipeline {
      * Submit chunks the renderer flagged as visible-but-missing to the
      * background extractor. No render-thread work beyond the bookkeeping;
      * actual block iteration happens on a worker.
+     *
+     * Picks chunks by velocity-aware score: chunks ahead of the player's
+     * flight path beat chunks behind it. Without this, fast movement (plane
+     * mods, elytra, teleports) hits popin because vanilla FIFO ordering picks
+     * whatever was queued first instead of what's most urgent.
      */
-    private static void processRequestedColumns(ClientLevel level) {
+    private static void processRequestedColumns(Minecraft mc, ClientLevel level) {
         int available = Math.min(REQUEST_UPLOAD_BUDGET, MAX_IN_FLIGHT_UPLOADS - inFlightSubmissions.size());
         if (available <= 0) {
             return;
         }
 
+        double playerX = mc.player.getX();
+        double playerZ = mc.player.getZ();
+
         ArrayList<Long> batch = new ArrayList<>(available);
         synchronized (requestedColumns) {
+            ArrayList<long[]> scored = new ArrayList<>(requestedColumns.size());
             Iterator<Long> iterator = requestedColumns.iterator();
-            while (iterator.hasNext() && batch.size() < available) {
+            while (iterator.hasNext()) {
                 long key = iterator.next();
-                iterator.remove();
                 if (uploadedColumns.contains(key) || inFlightSubmissions.contains(key)) {
+                    iterator.remove();
                     continue;
                 }
+                int cx = unpackChunkX(key);
+                int cz = unpackChunkZ(key);
+                double score = VelocityChunkPrioritizer.scoreChunk(playerX, playerZ, cx, cz);
+                scored.add(new long[] { Double.doubleToRawLongBits(score), key });
+            }
+            scored.sort((a, b) -> Double.compare(
+                    Double.longBitsToDouble(b[0]),
+                    Double.longBitsToDouble(a[0])));
+
+            for (int i = 0; i < scored.size() && batch.size() < available; i++) {
+                long key = scored.get(i)[1];
                 batch.add(key);
+                requestedColumns.remove(key);
             }
         }
 
