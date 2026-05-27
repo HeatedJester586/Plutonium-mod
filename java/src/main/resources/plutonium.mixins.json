@@ -9,6 +9,9 @@
     "NoiseInterpolatorAccessor",
     "NoiseChunkGpuDensityMixin"
   ],
+  "client": [
+    "VideoSettingsScreenMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   }

@@ -1,6 +1,10 @@
 package com.plutonium.backbone;
 
+import com.plutonium.backbone.client.PlutoniumConfigScreen;
 import com.plutonium.backbone.common.Config;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.client.ConfigScreenHandler;
+import net.minecraftforge.fml.DistExecutor;
 import net.minecraftforge.fml.ModLoadingContext;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.config.ModConfig;
@@ -17,6 +21,12 @@ public class PlutoniumMod {
     public PlutoniumMod() {
         ModLoadingContext.get().registerConfig(ModConfig.Type.CLIENT, Config.CLIENT_SPEC);
         FMLJavaModLoadingContext.get().getModEventBus().addListener(PlutoniumMod::onClientConfigLoad);
+        DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () -> {
+            ModLoadingContext.get().registerExtensionPoint(
+                    ConfigScreenHandler.ConfigScreenFactory.class,
+                    () -> new ConfigScreenHandler.ConfigScreenFactory(
+                            (mc, parent) -> new PlutoniumConfigScreen(parent)));
+        });
         LOGGER.info("[Plutonium] Mod initialized. DLL will be loaded on first backend activation.");
     }
 
