@@ -1,0 +1,117 @@
+buildscript {
+    repositories {
+        maven { url = 'https://maven.minecraftforge.net' }
+        maven { url = 'https://repo.spongepowered.org/repository/maven-public/' }
+        mavenCentral()
+    }
+    dependencies {
+        classpath group: 'net.minecraftforge.gradle', name: 'ForgeGradle', version: '6.0.+', changing: true
+        classpath 'org.spongepowered:mixingradle:0.7-SNAPSHOT'
+    }
+}
+
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+}
+
+apply plugin: 'org.spongepowered.mixin'
+
+// --- MOD IDENTITY ---
+group = 'com.plutonium.backbone'
+version = '1.0.0'
+archivesBaseName = 'plutonium'
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+minecraft {
+    mappings channel: 'official', version: '1.20.1'
+    copyIdeResources = true
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+
+            // Native DLL from Visual Studio Release|x64 (see copyNativeDll task)
+            jvmArgs "-Dplutonium.native.path=D:/VS/BackboneEngine_uranium_mod/x64/Release/BackboneEngine_uranium_mod.dll"
+
+            // Mixin config
+            arg "-mixin.config=plutonium.mixins.json"
+
+            mods {
+                plutonium {
+                    source sourceSets.main
+                }
+            }
+        }
+
+        client {
+            property 'forge.enabledGameTestNamespaces', 'plutonium'
+        }
+
+        server {
+            property 'forge.enabledGameTestNamespaces', 'plutonium'
+            args '--nogui'
+        }
+    }
+}
+
+// Include generated resources
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Minecraft & Forge
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+    // Mixin annotation processor
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+}
+
+// Mixin configuration
+mixin {
+    add sourceSets.main, "plutonium.refmap.json"
+    config "plutonium.mixins.json"
+}
+
+// Jar manifest
+tasks.named('jar', Jar).configure {
+    manifest {
+        attributes([
+                'Specification-Title'     : 'Plutonium Backbone',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.jar.archiveVersion,
+                'MixinConfigs'            : "plutonium.mixins.json"
+        ])
+    }
+    finalizedBy 'reobfJar'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+def nativeDllRelease = file('D:/VS/BackboneEngine_uranium_mod/x64/Release/BackboneEngine_uranium_mod.dll')
+
+tasks.register('copyNativeDll') {
+    description = 'Copy BackboneEngine_uranium_mod.dll into resources as plutonium_backend.dll'
+    onlyIf { nativeDllRelease.exists() }
+    doLast {
+        copy {
+            from nativeDllRelease
+            into layout.projectDirectory.dir('src/main/resources')
+            rename { 'plutonium_backend.dll' }
+        }
+        logger.lifecycle('Copied native DLL to src/main/resources/plutonium_backend.dll')
+    }
+}
+
+tasks.named('processResources').configure { dependsOn 'copyNativeDll' }
+tasks.named('compileJava').configure { dependsOn 'copyNativeDll' }
