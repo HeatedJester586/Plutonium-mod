@@ -110,6 +110,17 @@ public final class NativeInterface {
     public static native boolean nEvaluateChunkDensityCells(
             long enginePtr, int chunkX, int chunkZ, long seed, java.nio.ByteBuffer outBuffer, int count);
 
+    /**
+     * Batched density eval. coordsBuffer holds chunkCount * 2 LE int32s (cx, cz),
+     * outBuffer receives chunkCount * 1225 LE doubles. One CUDA kernel launch
+     * processes all of them — that's the whole point: a single launch with
+     * (chunkCount * 1225) threads actually uses the GPU, instead of 1,225-thread
+     * launches per chunk that barely warm one SM.
+     */
+    public static native boolean nEvaluateChunkDensityCellsBatch(
+            long enginePtr, java.nio.ByteBuffer coordsBuffer, java.nio.ByteBuffer outBuffer,
+            int chunkCount, long seed);
+
     // ---- Physics ----
     public static native void nStartPhysics(long enginePtr);
     public static native void nStopPhysics(long enginePtr);

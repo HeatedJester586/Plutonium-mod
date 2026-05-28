@@ -117,6 +117,20 @@ public:
  bool evaluateDensityPoints(const int32_t* coordsXYZ, double* outValues, int count);
  bool evaluateChunkDensityCells(int chunkX, int chunkZ, long seed, double* outValues, int count);
 
+ /**
+  * Batch variant: evaluate density cells for many chunks in a single CUDA
+  * kernel launch. The per-chunk path used a 1225-thread kernel which barely
+  * touched the GPU. This packs all chunks' cells into one launch sized
+  * (chunkCount * 1225) threads — enough to actually saturate a modern GPU.
+  *
+  *   coordsXZ:    chunkCount * 2 int32_t pairs (chunkX, chunkZ)
+  *   outValues:   chunkCount * PLUTONIUM_DENSITY_CELL_COUNT doubles, contiguous
+  *
+  * Scratch register memory is allocated lazily based on the active AST's real
+  * instruction count, not the static MAX, so memory pressure stays sane.
+  */
+ bool evaluateChunkDensityCellsBatch(const int32_t* coordsXZ, double* outValues, int chunkCount, long seed);
+
  // Thread-safe block update (must stay consistent with d_front for physics kernel reads)
  void setBlockNative(int x, int y, int z, unsigned char id, unsigned char meta = 0, unsigned char light = 15);
 
@@ -209,6 +223,23 @@ private:
  double* d_astRegisterBuffer = nullptr;
  std::mutex chunkMutex;
  std::shared_mutex astBufferMutex;
+
+ // Real instruction count for the currently uploaded AST. Captured from the
+ // header at uploadAST time so the batch density kernel can size scratch
+ // registers per-thread at the actual count rather than the static MAX.
+ int32_t currentAstInstructionCount = 0;
+
+ // Lazy-allocated scratch for evaluateChunkDensityCellsBatch. Re-sized when
+ // the requested batch size grows. One big slab of doubles, indexed by the
+ // kernel via (globalThreadIdx * instructionCount).
+ double* d_batchAstRegisters = nullptr;
+ size_t d_batchAstRegistersBytes = 0;
+ int32_t* d_batchChunkCoords = nullptr;
+ size_t d_batchChunkCoordsBytes = 0;
+ double* d_batchDensityOut = nullptr;
+ size_t d_batchDensityOutBytes = 0;
+ cudaStream_t batchStream = nullptr;
+ std::mutex batchMutex;
 
  struct DeviceChunkGenContext {
   VoxelBlock* d_chunk;

@@ -204,8 +204,9 @@ public abstract class FastGpuChunkMixin {
                 ByteBuffer densityCells = GPU_DENSITY_CELL_BUFFER.get();
                 densityCells.clear();
                 long nativeStartNs = System.nanoTime();
-                boolean generated = NativeInterface.nEvaluateChunkDensityCells(
-                        gpuEnginePtr, x, z, seed, densityCells, GpuDensityCellCache.DENSITY_CELL_COUNT);
+                com.plutonium.backbone.worldgen.GpuDensityBatchCoordinator.configure(gpuEnginePtr, seed);
+                boolean generated = com.plutonium.backbone.worldgen.GpuDensityBatchCoordinator
+                        .requestDensity(x, z, densityCells);
                 nativeNs = System.nanoTime() - nativeStartNs;
                 if (!generated) {
                     if (GPU_WORLDGEN_FALLBACK_LOGS.getAndIncrement() < 32) {

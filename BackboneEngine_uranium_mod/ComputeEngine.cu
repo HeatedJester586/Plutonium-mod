@@ -749,6 +749,47 @@ __global__ void evaluateDensityPointsKernel(
  outValues[idx] = astBuffer ? evaluateAST(worldX, worldY, worldZ, astBuffer, regs) : 0.0;
 }
 
+// ── Batched density kernel ───────────────────────────────────────────────────
+// One launch processes ALL chunks in the batch. With a typical 32-chunk batch
+// that's 32 * 1225 = 39,200 threads — enough to actually fill a few SMs on a
+// modern GPU instead of leaving them idle while we wait for a tiny per-chunk
+// launch to complete and the next JNI call to come in.
+__global__ void evaluateDensityCellsBatchKernel(
+ double* densityCellsBatch,         // chunkCount * PLUTONIUM_DENSITY_CELL_COUNT doubles
+ const int32_t* coordsXZ,           // chunkCount * 2 ints (cx, cz)
+ int chunkCount,
+ long seed,
+ const void* astBuffer,
+ double* astRegistersBatch,         // chunkCount * PLUTONIUM_DENSITY_CELL_COUNT * regStride doubles
+ int regStride)
+{
+ int globalIdx = blockIdx.x * blockDim.x + threadIdx.x;
+ int totalCells = chunkCount * PLUTONIUM_DENSITY_CELL_COUNT;
+ if (globalIdx >= totalCells) return;
+ (void)seed;
+
+ int chunkIdx = globalIdx / PLUTONIUM_DENSITY_CELL_COUNT;
+ int cellIdx = globalIdx - chunkIdx * PLUTONIUM_DENSITY_CELL_COUNT;
+
+ int chunkX = coordsXZ[chunkIdx * 2];
+ int chunkZ = coordsXZ[chunkIdx * 2 + 1];
+
+ int cx = cellIdx % PLUTONIUM_DENSITY_GRID_X;
+ int t = cellIdx / PLUTONIUM_DENSITY_GRID_X;
+ int cz = t % PLUTONIUM_DENSITY_GRID_Z;
+ int cy = t / PLUTONIUM_DENSITY_GRID_Z;
+
+ int worldX = chunkX * 16 + cx * PLUTONIUM_DENSITY_CELL_WIDTH;
+ int worldY = -64 + cy * PLUTONIUM_DENSITY_CELL_HEIGHT;
+ int worldZ = chunkZ * 16 + cz * PLUTONIUM_DENSITY_CELL_WIDTH;
+
+ double* regs = astRegistersBatch
+  ? astRegistersBatch + ((size_t)globalIdx * (size_t)regStride)
+  : nullptr;
+
+ densityCellsBatch[globalIdx] = astBuffer ? evaluateAST(worldX, worldY, worldZ, astBuffer, regs) : 0.0;
+}
+
 __global__ void fillChunkFromDensityCellsKernel(VoxelBlock* chunk, const double* densityCells) {
  int idx = blockIdx.x * blockDim.x + threadIdx.x;
  if (idx >= CHUNK_VOLUME) return;
@@ -1530,10 +1571,21 @@ void ComputeEngine::uploadAST(const void* buffer, size_t size) {
   cudaFree(d_astBuffer);
   d_astBuffer = nullptr;
  }
+ currentAstInstructionCount = 0;
 
  if (!buffer || size == 0) {
   PLUTO_LOG("uploadAST: cleared AST buffer.");
   return;
+ }
+
+ // Peek at the header to record the real instruction count. Batch density
+ // kernel needs this to size scratch registers per thread accurately —
+ // PLUTONIUM_MAX_AST_INSTRUCTIONS (8192) is way larger than any real AST.
+ if (size >= sizeof(PlutoniumBytecodeHeader)) {
+  const PlutoniumBytecodeHeader* h = (const PlutoniumBytecodeHeader*)buffer;
+  if (h->instructionCount > 0 && h->instructionCount <= PLUTONIUM_MAX_AST_INSTRUCTIONS) {
+   currentAstInstructionCount = h->instructionCount;
+  }
  }
 
  cudaError_t err = cudaMalloc(&d_astBuffer, size);
@@ -1551,7 +1603,98 @@ void ComputeEngine::uploadAST(const void* buffer, size_t size) {
   return;
  }
 
- PLUTO_LOG("uploadAST: copied %zu bytes to device AST buffer.", size);
+ PLUTO_LOG("uploadAST: copied %zu bytes to device AST buffer (instructionCount=%d).",
+           size, currentAstInstructionCount);
+}
+
+bool ComputeEngine::evaluateChunkDensityCellsBatch(
+ const int32_t* coordsXZ, double* outValues, int chunkCount, long seed)
+{
+ if (!coordsXZ || !outValues || chunkCount <= 0) return false;
+
+ cudaSetDevice(s_deviceIndex);
+ std::lock_guard<std::mutex> batchLock(batchMutex);
+ std::shared_lock<std::shared_mutex> astLock(astBufferMutex);
+ if (!d_astBuffer || currentAstInstructionCount <= 0) {
+  PLUTO_LOG("evaluateChunkDensityCellsBatch: no AST uploaded.");
+  return false;
+ }
+
+ if (batchStream == nullptr) {
+  cudaError_t e = cudaStreamCreateWithFlags(&batchStream, cudaStreamNonBlocking);
+  if (e != cudaSuccess) {
+   PLUTO_LOG("evaluateChunkDensityCellsBatch: stream create failed: %s", cudaGetErrorString(e));
+   return false;
+  }
+ }
+
+ const int regStride = currentAstInstructionCount;
+ const size_t totalCells = (size_t)chunkCount * (size_t)PLUTONIUM_DENSITY_CELL_COUNT;
+ const size_t coordsBytes = (size_t)chunkCount * 2 * sizeof(int32_t);
+ const size_t outBytes = totalCells * sizeof(double);
+ const size_t regBytes = totalCells * (size_t)regStride * sizeof(double);
+
+ auto ensureBuffer = [](void** ptr, size_t* curBytes, size_t needBytes, const char* name) -> bool {
+  if (*curBytes >= needBytes && *ptr) return true;
+  if (*ptr) { cudaFree(*ptr); *ptr = nullptr; *curBytes = 0; }
+  size_t alloc = needBytes + needBytes / 4 + 1024;  // small headroom
+  cudaError_t e = cudaMalloc(ptr, alloc);
+  if (e != cudaSuccess) {
+   PLUTO_LOG("evaluateChunkDensityCellsBatch: cudaMalloc %s (%zu bytes) failed: %s",
+             name, alloc, cudaGetErrorString(e));
+   *ptr = nullptr;
+   *curBytes = 0;
+   return false;
+  }
+  *curBytes = alloc;
+  return true;
+ };
+
+ if (!ensureBuffer((void**)&d_batchChunkCoords, &d_batchChunkCoordsBytes, coordsBytes, "coords")) return false;
+ if (!ensureBuffer((void**)&d_batchDensityOut,  &d_batchDensityOutBytes,  outBytes,    "out")) return false;
+ if (!ensureBuffer((void**)&d_batchAstRegisters, &d_batchAstRegistersBytes, regBytes,  "regs")) return false;
+
+ cudaError_t err = cudaMemcpyAsync(d_batchChunkCoords, coordsXZ, coordsBytes,
+                                   cudaMemcpyHostToDevice, batchStream);
+ if (err != cudaSuccess) {
+  PLUTO_LOG("evaluateChunkDensityCellsBatch: coords upload failed: %s", cudaGetErrorString(err));
+  return false;
+ }
+
+ const int threadsPerBlock = PLUTONIUM_WORLDGEN_THREADS_PER_BLOCK;
+ const int totalThreads = (int)totalCells;
+ const int blocks = (totalThreads + threadsPerBlock - 1) / threadsPerBlock;
+
+ evaluateDensityCellsBatchKernel<<<blocks, threadsPerBlock, 0, batchStream>>>(
+  d_batchDensityOut,
+  d_batchChunkCoords,
+  chunkCount,
+  seed,
+  d_astBuffer,
+  d_batchAstRegisters,
+  regStride);
+ cudaError_t launchErr = cudaGetLastError();
+ if (launchErr != cudaSuccess) {
+  PLUTO_LOG("evaluateChunkDensityCellsBatch: kernel launch failed (chunks=%d, threads=%d): %s",
+            chunkCount, totalThreads, cudaGetErrorString(launchErr));
+  return false;
+ }
+
+ err = cudaMemcpyAsync(outValues, d_batchDensityOut, outBytes,
+                       cudaMemcpyDeviceToHost, batchStream);
+ if (err != cudaSuccess) {
+  PLUTO_LOG("evaluateChunkDensityCellsBatch: out copy enqueue failed: %s", cudaGetErrorString(err));
+  return false;
+ }
+
+ err = cudaStreamSynchronize(batchStream);
+ if (err != cudaSuccess) {
+  PLUTO_LOG("evaluateChunkDensityCellsBatch: stream sync failed (chunks=%d): %s",
+            chunkCount, cudaGetErrorString(err));
+  return false;
+ }
+
+ return true;
 }
 
 void ComputeEngine::updateBlockBatch(const void* buffer, int count) {

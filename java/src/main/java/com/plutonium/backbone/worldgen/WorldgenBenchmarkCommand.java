@@ -16,7 +16,15 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * /plutonium benchmark <chunkRadius> [centerChunkX] [centerChunkZ]
@@ -79,27 +87,47 @@ public final class WorldgenBenchmarkCommand {
 
         AtomicLong slowestNs = new AtomicLong();
         AtomicLong fastestNs = new AtomicLong(Long.MAX_VALUE);
-        long startNs = System.nanoTime();
-        int generated = 0;
+        AtomicInteger completed = new AtomicInteger();
 
+        // Parallel issue so the batch coordinator on the GPU side actually sees
+        // sibling chunks at the same time. With a sequential getChunk loop, only
+        // one chunk is ever in-flight and batching can't kick in — every call
+        // would degrade to a single-chunk batch (worse than the unbatched path).
+        int parallelism = Math.max(4, Runtime.getRuntime().availableProcessors());
+        ExecutorService submitter = Executors.newFixedThreadPool(parallelism, new ThreadFactory() {
+            private final AtomicInteger n = new AtomicInteger();
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread t = new Thread(r, "Plutonium-BenchIssue-" + n.getAndIncrement());
+                t.setDaemon(true);
+                return t;
+            }
+        });
+
+        long startNs = System.nanoTime();
+        List<CompletableFuture<Boolean>> futures = new ArrayList<>(totalChunks);
         for (int dz = -chunkRadius; dz <= chunkRadius; dz++) {
             for (int dx = -chunkRadius; dx <= chunkRadius; dx++) {
                 int cx = offsetX + dx;
                 int cz = offsetZ + dz;
-                long chunkStart = System.nanoTime();
-                ChunkAccess chunk = cache.getChunk(cx, cz, ChunkStatus.FULL, true);
-                long chunkNs = System.nanoTime() - chunkStart;
-                if (chunk == null) {
-                    src.sendFailure(Component.literal(String.format(Locale.ROOT,
-                            "[Plutonium/Bench] getChunk returned null at (%d,%d) after %d chunks.", cx, cz, generated)));
-                    return generated;
-                }
-                generated++;
-                slowestNs.accumulateAndGet(chunkNs, Math::max);
-                fastestNs.accumulateAndGet(chunkNs, Math::min);
+                futures.add(CompletableFuture.supplyAsync(() -> {
+                    long chunkStart = System.nanoTime();
+                    ChunkAccess chunk = cache.getChunk(cx, cz, ChunkStatus.FULL, true);
+                    long chunkNs = System.nanoTime() - chunkStart;
+                    if (chunk == null) return Boolean.FALSE;
+                    slowestNs.accumulateAndGet(chunkNs, Math::max);
+                    fastestNs.accumulateAndGet(chunkNs, Math::min);
+                    completed.incrementAndGet();
+                    return Boolean.TRUE;
+                }, submitter));
             }
         }
+        for (CompletableFuture<Boolean> f : futures) {
+            try { f.get(5, TimeUnit.MINUTES); } catch (Exception e) { /* swallow per-future */ }
+        }
+        submitter.shutdown();
         long totalNs = System.nanoTime() - startNs;
+        int generated = completed.get();
 
         double totalMs = totalNs / 1_000_000.0;
         double avgMs = totalMs / generated;

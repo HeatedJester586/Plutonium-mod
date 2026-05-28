@@ -285,6 +285,34 @@ extern "C" {
         return ok ? JNI_TRUE : JNI_FALSE;
     }
 
+    JNIEXPORT jboolean JNICALL
+        Java_com_plutonium_backbone_bridge_NativeInterface_nEvaluateChunkDensityCellsBatch(
+            JNIEnv* env, jclass, jlong enginePtr,
+            jobject coordsBuf, jobject outBuf, jint chunkCount, jlong seed) {
+        ComputeEngine* engine = (ComputeEngine*)(uintptr_t)enginePtr;
+        if (!engine || !coordsBuf || !outBuf || chunkCount <= 0) return JNI_FALSE;
+
+        const int32_t* coords = (const int32_t*)env->GetDirectBufferAddress(coordsBuf);
+        double* out = (double*)env->GetDirectBufferAddress(outBuf);
+        if (!coords || !out) {
+            PLUTO_LOG("nEvaluateChunkDensityCellsBatch: non-direct ByteBuffer.");
+            return JNI_FALSE;
+        }
+        jlong coordsCap = env->GetDirectBufferCapacity(coordsBuf);
+        jlong outCap = env->GetDirectBufferCapacity(outBuf);
+        const jlong reqCoords = (jlong)chunkCount * 2 * (jlong)sizeof(int32_t);
+        const jlong reqOut = (jlong)chunkCount * 1225 * (jlong)sizeof(double);
+        if (coordsCap < reqCoords || outCap < reqOut) {
+            PLUTO_LOG("nEvaluateChunkDensityCellsBatch: buffer too small (coords=%lld/%lld, out=%lld/%lld)",
+                      (long long)coordsCap, (long long)reqCoords,
+                      (long long)outCap, (long long)reqOut);
+            return JNI_FALSE;
+        }
+
+        bool ok = engine->evaluateChunkDensityCellsBatch(coords, out, (int)chunkCount, (long)seed);
+        return ok ? JNI_TRUE : JNI_FALSE;
+    }
+
     JNIEXPORT void JNICALL
         Java_com_plutonium_backbone_bridge_NativeInterface_nUpdateBlock(
             JNIEnv* env, jclass cls, jlong enginePtr, jint x, jint y, jint z, jbyte id, jbyte meta, jbyte light) {
