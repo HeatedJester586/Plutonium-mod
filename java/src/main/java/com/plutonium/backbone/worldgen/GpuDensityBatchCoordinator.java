@@ -146,6 +146,20 @@ public final class GpuDensityBatchCoordinator {
         int count = batch.size();
         if (count == 0) return true;
 
+        // Single-chunk batches happen when the caller is alone (vanilla
+        // serializes chunk generation through the main server thread, so
+        // "parallel" callers from the chunk worker pool still funnel
+        // through one at a time). Use the original per-chunk JNI path —
+        // it's faster than spinning up the batch buffers for one chunk.
+        if (count == 1) {
+            Slot s = batch.slots.get(0);
+            ByteBuffer out = ByteBuffer.allocateDirect(DENSITY_CELLS_PER_CHUNK * Double.BYTES).order(ByteOrder.nativeOrder());
+            boolean ok = NativeInterface.nEvaluateChunkDensityCells(
+                    enginePtr, s.chunkX, s.chunkZ, currentSeed, out, DENSITY_CELLS_PER_CHUNK);
+            if (ok) batch.results = out;
+            return ok;
+        }
+
         ByteBuffer coords = ByteBuffer.allocateDirect(count * 2 * Integer.BYTES).order(ByteOrder.nativeOrder());
         ByteBuffer out = ByteBuffer.allocateDirect(count * DENSITY_CELLS_PER_CHUNK * Double.BYTES).order(ByteOrder.nativeOrder());
         for (Slot s : batch.slots) {
@@ -166,13 +180,10 @@ public final class GpuDensityBatchCoordinator {
             return false;
         }
         batch.results = out;
-        if (count >= 4) {
-            // Only worth logging when batching actually fired up.
-            LOGGER.info("[Plutonium] Batched density: {} chunks in {} ms ({} us/chunk).",
-                    count,
-                    String.format(java.util.Locale.ROOT, "%.3f", elapsedNs / 1_000_000.0),
-                    String.format(java.util.Locale.ROOT, "%.1f", (elapsedNs / 1_000.0) / count));
-        }
+        LOGGER.info("[Plutonium] Batched density: {} chunks in {} ms ({} us/chunk).",
+                count,
+                String.format(java.util.Locale.ROOT, "%.3f", elapsedNs / 1_000_000.0),
+                String.format(java.util.Locale.ROOT, "%.1f", (elapsedNs / 1_000.0) / count));
         return true;
     }
 
