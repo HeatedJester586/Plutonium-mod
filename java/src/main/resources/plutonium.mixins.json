@@ -7,7 +7,8 @@
   "mixins": [
     "FastGpuChunkMixin",
     "NoiseInterpolatorAccessor",
-    "NoiseChunkGpuDensityMixin"
+    "NoiseChunkGpuDensityMixin",
+    "ThreadedLevelLightEngineMixin"
   ],
   "client": [
     "VideoSettingsScreenMixin"
