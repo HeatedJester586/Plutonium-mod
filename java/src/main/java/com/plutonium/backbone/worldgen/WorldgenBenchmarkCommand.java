@@ -19,14 +19,13 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * /plutonium benchmark <chunkRadius>
+ * /plutonium benchmark <chunkRadius> [centerChunkX] [centerChunkZ]
  *
- * Picks a chunk center far from spawn (offset by a hash of System.nanoTime
- * to avoid cache hits across runs) and forces every chunk inside the radius
- * to ChunkStatus.FULL. Times the whole thing.
+ * Picks a chunk center far from spawn, or uses the provided center, and forces
+ * every chunk inside the radius to ChunkStatus.FULL. Times the whole thing.
  *
  * Run once with experimentalGpuChunkGen + unsafeGpuWorldgen = false (vanilla),
- * once with both true (Plutonium). Same radius, same seed, same machine.
+ * once with both true (Plutonium). Same radius, same center, same seed, same machine.
  * The ratio is your real speedup.
  */
 @Mod.EventBusSubscriber(modid = "plutonium", bus = Mod.EventBusSubscriber.Bus.FORGE)
@@ -43,18 +42,27 @@ public final class WorldgenBenchmarkCommand {
                                 .requires(src -> src.hasPermission(2))
                                 .then(Commands.argument("chunkRadius", IntegerArgumentType.integer(1, 64))
                                         .executes(ctx -> runBenchmark(ctx,
-                                                IntegerArgumentType.getInteger(ctx, "chunkRadius")))))
+                                                IntegerArgumentType.getInteger(ctx, "chunkRadius")))
+                                        .then(Commands.argument("centerChunkX", IntegerArgumentType.integer())
+                                                .then(Commands.argument("centerChunkZ", IntegerArgumentType.integer())
+                                                        .executes(ctx -> runBenchmark(ctx,
+                                                                IntegerArgumentType.getInteger(ctx, "chunkRadius"),
+                                                                IntegerArgumentType.getInteger(ctx, "centerChunkX"),
+                                                                IntegerArgumentType.getInteger(ctx, "centerChunkZ")))))))
         );
     }
 
     private static int runBenchmark(CommandContext<CommandSourceStack> ctx, int chunkRadius) {
-        CommandSourceStack src = ctx.getSource();
-        ServerLevel level = src.getLevel();
-        ServerChunkCache cache = level.getChunkSource();
-
         long offsetSeed = System.nanoTime();
         int offsetX = 50_000 + (int)((offsetSeed >>> 1) % 10_000);
         int offsetZ = 50_000 + (int)((offsetSeed >>> 17) % 10_000);
+        return runBenchmark(ctx, chunkRadius, offsetX, offsetZ);
+    }
+
+    private static int runBenchmark(CommandContext<CommandSourceStack> ctx, int chunkRadius, int offsetX, int offsetZ) {
+        CommandSourceStack src = ctx.getSource();
+        ServerLevel level = src.getLevel();
+        ServerChunkCache cache = level.getChunkSource();
 
         int diameter = chunkRadius * 2 + 1;
         int totalChunks = diameter * diameter;
@@ -63,6 +71,10 @@ public final class WorldgenBenchmarkCommand {
         src.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
                 "[Plutonium/Bench] Forcing %d chunks (radius=%d) at center (%d,%d). GPU worldgen=%s",
                 totalChunks, chunkRadius, offsetX, offsetZ, gpuEnabled ? "ON" : "OFF")),
+                false);
+        src.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
+                "[Plutonium/Bench] Repeat same area with: /plutonium benchmark %d %d %d",
+                chunkRadius, offsetX, offsetZ)),
                 false);
 
         AtomicLong slowestNs = new AtomicLong();
