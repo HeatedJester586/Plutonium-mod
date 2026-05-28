@@ -207,8 +207,6 @@ private:
  double* d_densityCells = nullptr;
  void* d_astBuffer = nullptr;
  double* d_astRegisterBuffer = nullptr;
- size_t d_astRegisterCapacityBytes = 0;
- int astInstructionCount = 0;
  std::mutex chunkMutex;
  std::shared_mutex astBufferMutex;
 
@@ -216,7 +214,6 @@ private:
   VoxelBlock* d_chunk;
   double* d_densityCells;
   double* d_astRegisters;
-  size_t astRegisterCapacityBytes;
   cudaStream_t stream;
   bool inUse;
  };
@@ -225,8 +222,6 @@ private:
  std::mutex chunkGenPoolMutex;
  DeviceChunkGenContext* acquireChunkGenContext();
  void releaseChunkGenContext(DeviceChunkGenContext* ctx);
- bool ensureAstRegisterCapacityLocked(int instructionCount);
- static size_t astRegisterBytesFor(int instructionCount, int laneCount);
 
  // Dynamic stream dimensions
  int streamWidth;

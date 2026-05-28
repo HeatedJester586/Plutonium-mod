@@ -16,7 +16,6 @@
 #include <thread>
 #include <mutex>
 #include <cstring>
-#include <limits>
 
 //3. JNI Headers
 #include <jni.h>
@@ -151,17 +150,7 @@ __device__ int plutoniumFindIntervalStart(const float* locations, int count, flo
  return low - 1;
 }
 
-__device__ double plutoniumRegGet(const double* regs, int regStride, int idx) {
- return regs[(size_t)idx * (size_t)regStride];
-}
-
-__device__ void plutoniumRegSet(double* regs, int regStride, int idx, double value) {
- regs[(size_t)idx * (size_t)regStride] = value;
-}
-
-__device__ double evaluateFlatSpline(
- const unsigned char* dataPool, int32_t offset, const double* regs, int regStride)
-{
+__device__ double evaluateFlatSpline(const unsigned char* dataPool, int32_t offset, const double* regs) {
  const unsigned char* node = dataPool + offset;
  int32_t nodeType = *reinterpret_cast<const int32_t*>(node);
 
@@ -185,16 +174,16 @@ __device__ double evaluateFlatSpline(
  const int32_t* childOffsets = reinterpret_cast<const int32_t*>(dataPool + childOffsetsOffset);
  const float* derivatives = reinterpret_cast<const float*>(dataPool + derivativesOffset);
 
- float x = (float)plutoniumRegGet(regs, regStride, regIdx);
+ float x = (float)regs[regIdx];
  int last = count - 1;
  int idx = plutoniumFindIntervalStart(locations, count, x);
 
  if (idx < 0) {
-  return (double)((float)evaluateFlatSpline(dataPool, childOffsets[0], regs, regStride)
+  return (double)((float)evaluateFlatSpline(dataPool, childOffsets[0], regs)
    + derivatives[0] * (x - locations[0]));
  }
  if (idx == last) {
-  return (double)((float)evaluateFlatSpline(dataPool, childOffsets[last], regs, regStride)
+  return (double)((float)evaluateFlatSpline(dataPool, childOffsets[last], regs)
    + derivatives[last] * (x - locations[last]));
  }
 
@@ -202,8 +191,8 @@ __device__ double evaluateFlatSpline(
  float xHigh = locations[idx + 1];
  float k = (x - xLow) / (xHigh - xLow);
 
- float yLow = (float)evaluateFlatSpline(dataPool, childOffsets[idx], regs, regStride);
- float yHigh = (float)evaluateFlatSpline(dataPool, childOffsets[idx + 1], regs, regStride);
+ float yLow = (float)evaluateFlatSpline(dataPool, childOffsets[idx], regs);
+ float yHigh = (float)evaluateFlatSpline(dataPool, childOffsets[idx + 1], regs);
 
  float dLow = derivatives[idx];
  float dHigh = derivatives[idx + 1];
@@ -535,7 +524,7 @@ __device__ double evaluateNoisePayload(
 
 __device__ double evaluateShiftedNoisePayload(
  const unsigned char* dataPool, int32_t dataOffset,
- double x, double y, double z, const double* regs, int regStride)
+ double x, double y, double z, const double* regs)
 {
  const unsigned char* payload = dataPool + dataOffset;
  const int32_t* header = reinterpret_cast<const int32_t*>(payload);
@@ -545,9 +534,9 @@ __device__ double evaluateShiftedNoisePayload(
  const double* scales = reinterpret_cast<const double*>(payload + scaleOffset);
  const int32_t* shifts = reinterpret_cast<const int32_t*>(payload + normalPayloadBytes);
 
- double dx = x * scales[0] + plutoniumRegGet(regs, regStride, shifts[0]);
- double dy = y * scales[1] + plutoniumRegGet(regs, regStride, shifts[1]);
- double dz = z * scales[0] + plutoniumRegGet(regs, regStride, shifts[2]);
+ double dx = x * scales[0] + regs[shifts[0]];
+ double dy = y * scales[1] + regs[shifts[1]];
+ double dz = z * scales[0] + regs[shifts[2]];
 
  return evaluateNormalNoisePayloadRaw(payload, dx, dy, dz);
 }
@@ -580,9 +569,7 @@ constexpr int PLUTONIUM_DENSITY_GRID_Y = PLUTONIUM_DENSITY_CELLS_Y + 1;
 constexpr int PLUTONIUM_DENSITY_CELL_COUNT =
  PLUTONIUM_DENSITY_GRID_X * PLUTONIUM_DENSITY_GRID_Y * PLUTONIUM_DENSITY_GRID_Z;
 
-__device__ double evaluateAST(
- int worldX, int worldY, int worldZ, const void* astBuffer, double* regs, int regStride)
-{
+__device__ double evaluateAST(int worldX, int worldY, int worldZ, const void* astBuffer, double* regs) {
  if (!astBuffer || !regs) return 0.0;
 
  const unsigned char* base = static_cast<const unsigned char*>(astBuffer);
@@ -603,142 +590,125 @@ __device__ double evaluateAST(
   const PlutoniumInstruction& ins = instructions[i];
   switch (static_cast<PlutoniumOpcode>(ins.opcodeId)) {
    case PlutoniumOpcode::CONSTANT:
-    plutoniumRegSet(regs, regStride, i, ins.value);
+    regs[i] = ins.value;
     break;
    case PlutoniumOpcode::ADD:
-    plutoniumRegSet(regs, regStride, i,
-                    plutoniumRegGet(regs, regStride, ins.arg1) +
-                    plutoniumRegGet(regs, regStride, ins.arg2));
+    regs[i] = regs[ins.arg1] + regs[ins.arg2];
     break;
    case PlutoniumOpcode::MUL:
-    plutoniumRegSet(regs, regStride, i,
-                    plutoniumRegGet(regs, regStride, ins.arg1) *
-                    plutoniumRegGet(regs, regStride, ins.arg2));
+    regs[i] = regs[ins.arg1] * regs[ins.arg2];
     break;
    case PlutoniumOpcode::MIN:
-    plutoniumRegSet(regs, regStride, i,
-                    fmin(plutoniumRegGet(regs, regStride, ins.arg1),
-                         plutoniumRegGet(regs, regStride, ins.arg2)));
+    regs[i] = fmin(regs[ins.arg1], regs[ins.arg2]);
     break;
    case PlutoniumOpcode::MAX:
-    plutoniumRegSet(regs, regStride, i,
-                    fmax(plutoniumRegGet(regs, regStride, ins.arg1),
-                         plutoniumRegGet(regs, regStride, ins.arg2)));
+    regs[i] = fmax(regs[ins.arg1], regs[ins.arg2]);
     break;
    case PlutoniumOpcode::ABS:
-    plutoniumRegSet(regs, regStride, i, fabs(plutoniumRegGet(regs, regStride, ins.arg1)));
+    regs[i] = fabs(regs[ins.arg1]);
     break;
    case PlutoniumOpcode::SQUARE: {
-    double v = plutoniumRegGet(regs, regStride, ins.arg1);
-    plutoniumRegSet(regs, regStride, i, v * v);
+    double v = regs[ins.arg1];
+    regs[i] = v * v;
     break;
    }
    case PlutoniumOpcode::CUBE: {
-    double v = plutoniumRegGet(regs, regStride, ins.arg1);
-    plutoniumRegSet(regs, regStride, i, v * v * v);
+    double v = regs[ins.arg1];
+    regs[i] = v * v * v;
     break;
    }
    case PlutoniumOpcode::HALF_NEGATIVE: {
-    double v = plutoniumRegGet(regs, regStride, ins.arg1);
-    plutoniumRegSet(regs, regStride, i, v > 0.0 ? v : v * 0.5);
+    double v = regs[ins.arg1];
+    regs[i] = v > 0.0 ? v : v * 0.5;
     break;
    }
    case PlutoniumOpcode::QUARTER_NEGATIVE: {
-    double v = plutoniumRegGet(regs, regStride, ins.arg1);
-    plutoniumRegSet(regs, regStride, i, v > 0.0 ? v : v * 0.25);
+    double v = regs[ins.arg1];
+    regs[i] = v > 0.0 ? v : v * 0.25;
     break;
    }
    case PlutoniumOpcode::SQUEEZE: {
-    double v = plutoniumClamp(plutoniumRegGet(regs, regStride, ins.arg1), -1.0, 1.0);
-    plutoniumRegSet(regs, regStride, i, v / 2.0 - (v * v * v) / 24.0);
+    double v = plutoniumClamp(regs[ins.arg1], -1.0, 1.0);
+    regs[i] = v / 2.0 - (v * v * v) / 24.0;
     break;
    }
    case PlutoniumOpcode::MARKER:
-    plutoniumRegSet(regs, regStride, i, plutoniumRegGet(regs, regStride, ins.arg1));
+    regs[i] = regs[ins.arg1];
     break;
    case PlutoniumOpcode::CLAMP: {
     const double* bounds = reinterpret_cast<const double*>(dataPool + ins.dataOffset);
-    plutoniumRegSet(regs, regStride, i,
-                    plutoniumClamp(plutoniumRegGet(regs, regStride, ins.arg1), bounds[0], bounds[1]));
+    regs[i] = plutoniumClamp(regs[ins.arg1], bounds[0], bounds[1]);
     break;
    }
    case PlutoniumOpcode::BLEND_ALPHA:
-    plutoniumRegSet(regs, regStride, i, 1.0);
+    regs[i] = 1.0;
     break;
    case PlutoniumOpcode::BLEND_OFFSET:
    case PlutoniumOpcode::BEARDIFIER_MARKER:
-    plutoniumRegSet(regs, regStride, i, 0.0);
+    regs[i] = 0.0;
     break;
    case PlutoniumOpcode::BLEND_DENSITY:
-    plutoniumRegSet(regs, regStride, i, plutoniumRegGet(regs, regStride, ins.arg1));
+    regs[i] = regs[ins.arg1];
     break;
    case PlutoniumOpcode::RANGE_CHOICE: {
     const int32_t* branch = reinterpret_cast<const int32_t*>(dataPool + ins.dataOffset);
     const double* range = reinterpret_cast<const double*>(dataPool + ins.dataOffset + 8);
-    double d = plutoniumRegGet(regs, regStride, ins.arg1);
-    double v = (d >= range[0] && d < range[1])
-     ? plutoniumRegGet(regs, regStride, branch[0])
-     : plutoniumRegGet(regs, regStride, branch[1]);
-    plutoniumRegSet(regs, regStride, i, v);
+    double d = regs[ins.arg1];
+    regs[i] = (d >= range[0] && d < range[1]) ? regs[branch[0]] : regs[branch[1]];
     break;
    }
    case PlutoniumOpcode::Y_CLAMPED_GRADIENT: {
     const int32_t* yRange = reinterpret_cast<const int32_t*>(dataPool + ins.dataOffset);
     const double* values = reinterpret_cast<const double*>(dataPool + ins.dataOffset + 8);
-    plutoniumRegSet(regs, regStride, i, plutoniumClampedMap(
-     (double)worldY, (double)yRange[0], (double)yRange[1], values[0], values[1]));
+    regs[i] = plutoniumClampedMap(
+     (double)worldY, (double)yRange[0], (double)yRange[1], values[0], values[1]);
     break;
    }
    case PlutoniumOpcode::MUL_OR_ADD:
-    plutoniumRegSet(regs, regStride, i,
-                    (ins.arg2 == 0)
-                     ? plutoniumRegGet(regs, regStride, ins.arg1) * ins.value
-                     : plutoniumRegGet(regs, regStride, ins.arg1) + ins.value);
+    regs[i] = (ins.arg2 == 0) ? regs[ins.arg1] * ins.value : regs[ins.arg1] + ins.value;
     break;
    case PlutoniumOpcode::NOISE:
-    plutoniumRegSet(regs, regStride, i,
-                    evaluateNoisePayload(dataPool, ins.dataOffset, (double)worldX, (double)worldY, (double)worldZ));
+    regs[i] = evaluateNoisePayload(dataPool, ins.dataOffset, (double)worldX, (double)worldY, (double)worldZ);
     break;
    case PlutoniumOpcode::SHIFT:
-    plutoniumRegSet(regs, regStride, i, evaluateNoisePayload(
+    regs[i] = evaluateNoisePayload(
      dataPool, ins.dataOffset,
-     (double)worldX * 0.25, (double)worldY * 0.25, (double)worldZ * 0.25) * 4.0);
+     (double)worldX * 0.25, (double)worldY * 0.25, (double)worldZ * 0.25) * 4.0;
     break;
    case PlutoniumOpcode::SHIFT_A:
-    plutoniumRegSet(regs, regStride, i, evaluateNoisePayload(
+    regs[i] = evaluateNoisePayload(
      dataPool, ins.dataOffset,
-     (double)worldX * 0.25, 0.0, (double)worldZ * 0.25) * 4.0);
+     (double)worldX * 0.25, 0.0, (double)worldZ * 0.25) * 4.0;
     break;
    case PlutoniumOpcode::SHIFT_B:
-    plutoniumRegSet(regs, regStride, i, evaluateNoisePayload(
+    regs[i] = evaluateNoisePayload(
      dataPool, ins.dataOffset,
-     (double)worldZ * 0.25, (double)worldX * 0.25, 0.0) * 4.0);
+     (double)worldZ * 0.25, (double)worldX * 0.25, 0.0) * 4.0;
     break;
    case PlutoniumOpcode::SHIFTED_NOISE:
-    plutoniumRegSet(regs, regStride, i, evaluateShiftedNoisePayload(
-     dataPool, ins.dataOffset, (double)worldX, (double)worldY, (double)worldZ, regs, regStride));
+    regs[i] = evaluateShiftedNoisePayload(
+     dataPool, ins.dataOffset, (double)worldX, (double)worldY, (double)worldZ, regs);
     break;
    case PlutoniumOpcode::BLENDED_NOISE:
-    plutoniumRegSet(regs, regStride, i,
-                    evaluateBlendedNoise(dataPool + ins.dataOffset,
-                                         (double)worldX, (double)worldY, (double)worldZ));
+    regs[i] = evaluateBlendedNoise(dataPool + ins.dataOffset,
+                                   (double)worldX, (double)worldY, (double)worldZ);
     break;
    case PlutoniumOpcode::SPLINE:
-    plutoniumRegSet(regs, regStride, i, evaluateFlatSpline(dataPool, ins.dataOffset, regs, regStride));
+    regs[i] = evaluateFlatSpline(dataPool, ins.dataOffset, regs);
    break;
    case PlutoniumOpcode::WEIRD_SCALED_SAMPLER: {
-    plutoniumRegSet(regs, regStride, i, evaluateWeirdScaledSamplerPayload(
-     dataPool, ins.dataOffset, plutoniumRegGet(regs, regStride, ins.arg1),
-     (double)worldX, (double)worldY, (double)worldZ));
+    regs[i] = evaluateWeirdScaledSamplerPayload(
+     dataPool, ins.dataOffset, regs[ins.arg1],
+     (double)worldX, (double)worldY, (double)worldZ);
     break;
    }
    default:
-    plutoniumRegSet(regs, regStride, i, 0.0);
+    regs[i] = 0.0;
     break;
   }
  }
 
- return plutoniumRegGet(regs, regStride, header->instructionCount - 1);
+ return regs[header->instructionCount - 1];
 }
 
 // ── Noise kernel ─────────────────────────────────────────────────────────────
@@ -747,8 +717,7 @@ __device__ int densityCellIndex(int cx, int cy, int cz) {
 }
 
 __global__ void evaluateDensityCellsKernel(
- double* densityCells, int chunkX, int chunkZ, long seed, const void* astBuffer,
- double* astRegisters, int regStride)
+ double* densityCells, int chunkX, int chunkZ, long seed, const void* astBuffer, double* astRegisters)
 {
  int idx = blockIdx.x * blockDim.x + threadIdx.x;
  if (idx >= PLUTONIUM_DENSITY_CELL_COUNT) return;
@@ -762,23 +731,22 @@ __global__ void evaluateDensityCellsKernel(
  int worldX = chunkX * 16 + cx * PLUTONIUM_DENSITY_CELL_WIDTH;
  int worldY = -64 + cy * PLUTONIUM_DENSITY_CELL_HEIGHT;
  int worldZ = chunkZ * 16 + cz * PLUTONIUM_DENSITY_CELL_WIDTH;
- double* regs = astRegisters ? astRegisters + idx : nullptr;
+ double* regs = astRegisters ? astRegisters + ((size_t)idx * PLUTONIUM_MAX_AST_INSTRUCTIONS) : nullptr;
 
- densityCells[idx] = astBuffer ? evaluateAST(worldX, worldY, worldZ, astBuffer, regs, regStride) : 0.0;
+ densityCells[idx] = astBuffer ? evaluateAST(worldX, worldY, worldZ, astBuffer, regs) : 0.0;
 }
 
 __global__ void evaluateDensityPointsKernel(
- const int32_t* coordsXYZ, double* outValues, int count, const void* astBuffer,
- double* astRegisters, int regStride)
+ const int32_t* coordsXYZ, double* outValues, int count, const void* astBuffer, double* astRegisters)
 {
  int idx = blockIdx.x * blockDim.x + threadIdx.x;
  if (idx >= count) return;
- double* regs = astRegisters ? astRegisters + idx : nullptr;
+ double* regs = astRegisters ? astRegisters + ((size_t)idx * PLUTONIUM_MAX_AST_INSTRUCTIONS) : nullptr;
  int base = idx * 3;
  int worldX = coordsXYZ[base];
  int worldY = coordsXYZ[base + 1];
  int worldZ = coordsXYZ[base + 2];
- outValues[idx] = astBuffer ? evaluateAST(worldX, worldY, worldZ, astBuffer, regs, regStride) : 0.0;
+ outValues[idx] = astBuffer ? evaluateAST(worldX, worldY, worldZ, astBuffer, regs) : 0.0;
 }
 
 __global__ void fillChunkFromDensityCellsKernel(VoxelBlock* chunk, const double* densityCells) {
@@ -851,8 +819,6 @@ ComputeEngine::ComputeEngine()
  , h_chunk_buffer(nullptr)
  , d_densityCells(nullptr)
  , d_astRegisterBuffer(nullptr)
- , d_astRegisterCapacityBytes(0)
- , astInstructionCount(0)
  , d_meshBlocks(nullptr)
  , d_meshVerts(nullptr)
  , d_meshVertCount(nullptr)
@@ -895,11 +861,7 @@ ComputeEngine::~ComputeEngine() {
  if (h_chunk_buffer) cudaFreeHost(h_chunk_buffer);
  if (d_densityCells) { cudaFree(d_densityCells); d_densityCells = nullptr; }
  if (d_astBuffer) { cudaFree(d_astBuffer); d_astBuffer = nullptr; }
- if (d_astRegisterBuffer) {
-  cudaFree(d_astRegisterBuffer);
-  d_astRegisterBuffer = nullptr;
-  d_astRegisterCapacityBytes = 0;
- }
+ if (d_astRegisterBuffer) { cudaFree(d_astRegisterBuffer); d_astRegisterBuffer = nullptr; }
  if (d_meshBlocks) { cudaFree(d_meshBlocks); d_meshBlocks = nullptr; }
  if (d_meshVerts) { cudaFree(d_meshVerts); d_meshVerts = nullptr; }
  if (d_meshVertCount) { cudaFree(d_meshVertCount); d_meshVertCount = nullptr; }
@@ -973,9 +935,14 @@ bool ComputeEngine::init(int deviceIndex, int width, int height, int threadCount
  return false;
  }
 
- d_astRegisterBuffer = nullptr;
- d_astRegisterCapacityBytes = 0;
- astInstructionCount = 0;
+ const size_t astRegisterBytes =
+  (size_t)PLUTONIUM_DENSITY_CELL_COUNT * (size_t)PLUTONIUM_MAX_AST_INSTRUCTIONS * sizeof(double);
+ err = cudaMalloc((void**)&d_astRegisterBuffer, astRegisterBytes);
+ if (err != cudaSuccess) {
+ PLUTO_LOG("cudaMalloc d_astRegisterBuffer failed (%zu bytes): %s", astRegisterBytes, cudaGetErrorString(err));
+ return false;
+ }
+ PLUTO_LOG("AST VM register scratch allocated: %zu bytes.", astRegisterBytes);
 
  // Pre-allocate independent CUDA contexts for chunk generation. This removes
  // the old single d_chunk_buffer/d_densityCells/d_astRegisterBuffer mutex path
@@ -986,10 +953,6 @@ bool ComputeEngine::init(int deviceIndex, int width, int height, int threadCount
    DeviceChunkGenContext ctx{};
    ctx.inUse = false;
    ctx.stream = nullptr;
-   ctx.d_chunk = nullptr;
-   ctx.d_densityCells = nullptr;
-   ctx.d_astRegisters = nullptr;
-   ctx.astRegisterCapacityBytes = 0;
    err = cudaMalloc((void**)&ctx.d_chunk, chunkBytes);
    if (err != cudaSuccess) {
     PLUTO_LOG("DeviceChunkGenContext[%d] d_chunk alloc fail: %s", i, cudaGetErrorString(err));
@@ -998,6 +961,11 @@ bool ComputeEngine::init(int deviceIndex, int width, int height, int threadCount
    err = cudaMalloc((void**)&ctx.d_densityCells, densityBytes);
    if (err != cudaSuccess) {
     PLUTO_LOG("DeviceChunkGenContext[%d] d_densityCells alloc fail: %s", i, cudaGetErrorString(err));
+    return false;
+   }
+   err = cudaMalloc((void**)&ctx.d_astRegisters, astRegisterBytes);
+   if (err != cudaSuccess) {
+    PLUTO_LOG("DeviceChunkGenContext[%d] d_astRegisters alloc fail: %s", i, cudaGetErrorString(err));
     return false;
    }
    err = cudaStreamCreateWithFlags(&ctx.stream, cudaStreamNonBlocking);
@@ -1056,70 +1024,6 @@ bool ComputeEngine::init(int deviceIndex, int width, int height, int threadCount
  return true;
 }
 
-static bool ensureDeviceDoubleBufferCapacity(
- double** buffer, size_t* capacityBytes, size_t requiredBytes, const char* label)
-{
- if (requiredBytes == 0) return false;
- if (*buffer && *capacityBytes >= requiredBytes) return true;
-
- double* next = nullptr;
- cudaError_t err = cudaMalloc((void**)&next, requiredBytes);
- if (err != cudaSuccess) {
-  PLUTO_LOG("%s alloc failed (%zu bytes): %s", label, requiredBytes, cudaGetErrorString(err));
-  return false;
- }
-
- if (*buffer) cudaFree(*buffer);
- *buffer = next;
- *capacityBytes = requiredBytes;
- return true;
-}
-
-size_t ComputeEngine::astRegisterBytesFor(int instructionCount, int laneCount) {
- if (instructionCount <= 0 || laneCount <= 0) return 0;
-
- const size_t instructions = (size_t)instructionCount;
- const size_t lanes = (size_t)laneCount;
- constexpr size_t maxSize = (std::numeric_limits<size_t>::max)();
- if (instructions > maxSize / lanes || instructions * lanes > maxSize / sizeof(double)) {
-  return 0;
- }
- return instructions * lanes * sizeof(double);
-}
-
-bool ComputeEngine::ensureAstRegisterCapacityLocked(int instructionCount) {
- if (instructionCount <= 0 || instructionCount > PLUTONIUM_MAX_AST_INSTRUCTIONS) {
-  PLUTO_LOG("ensureAstRegisterCapacityLocked: invalid instruction count %d.", instructionCount);
-  return false;
- }
-
- const size_t requiredBytes = astRegisterBytesFor(instructionCount, PLUTONIUM_DENSITY_CELL_COUNT);
- if (requiredBytes == 0) {
-  PLUTO_LOG("ensureAstRegisterCapacityLocked: register size overflow for %d instructions.", instructionCount);
-  return false;
- }
-
- if (!ensureDeviceDoubleBufferCapacity(
-      &d_astRegisterBuffer, &d_astRegisterCapacityBytes, requiredBytes, "d_astRegisterBuffer")) {
-  return false;
- }
-
- {
-  std::lock_guard<std::mutex> poolLock(chunkGenPoolMutex);
-  for (size_t i = 0; i < chunkGenPool.size(); ++i) {
-   DeviceChunkGenContext& ctx = chunkGenPool[i];
-   if (!ensureDeviceDoubleBufferCapacity(
-        &ctx.d_astRegisters, &ctx.astRegisterCapacityBytes, requiredBytes, "ctx.d_astRegisters")) {
-    return false;
-   }
-  }
- }
-
- PLUTO_LOG("AST VM register scratch ready: %zu bytes/context (%d instructions x %d lanes).",
-           requiredBytes, instructionCount, PLUTONIUM_DENSITY_CELL_COUNT);
- return true;
-}
-
 void* ComputeEngine::generateChunkNoise(int chunkX, int chunkZ, long seed) {
  //1. Lock the GPU so multiple Java threads don't cause a massive pile-up
  std::lock_guard<std::mutex> lock(chunkMutex);
@@ -1131,15 +1035,8 @@ void* ComputeEngine::generateChunkNoise(int chunkX, int chunkZ, long seed) {
  }
 
  //3. Launch the kernel safely across the exact volume size
- std::shared_lock<std::shared_mutex> astLock(astBufferMutex);
- if (!d_astBuffer || astInstructionCount <= 0) {
-  printf("[Plutonium/CUDA] ERROR: AST is not uploaded! Skipping generation.\n");
-  return nullptr;
- }
-
  int cellBlocks = (PLUTONIUM_DENSITY_CELL_COUNT + PLUTONIUM_WORLDGEN_THREADS_PER_BLOCK - 1) / PLUTONIUM_WORLDGEN_THREADS_PER_BLOCK;
- evaluateDensityCellsKernel<<<cellBlocks, PLUTONIUM_WORLDGEN_THREADS_PER_BLOCK>>>(
-  d_densityCells, chunkX, chunkZ, seed, d_astBuffer, d_astRegisterBuffer, PLUTONIUM_DENSITY_CELL_COUNT);
+ evaluateDensityCellsKernel<<<cellBlocks, PLUTONIUM_WORLDGEN_THREADS_PER_BLOCK>>>(d_densityCells, chunkX, chunkZ, seed, d_astBuffer, d_astRegisterBuffer);
  cudaError_t launchErr = cudaGetLastError();
  if (launchErr != cudaSuccess) {
  printf("[Plutonium/CUDA] DENSITY KERNEL LAUNCH FAILED: %s\n", cudaGetErrorString(launchErr));
@@ -1220,24 +1117,14 @@ bool ComputeEngine::generateChunkNoiseInto(int chunkX, int chunkZ, long seed, vo
 
  // Diagnostic: verify the AST pointer is still alive. If it ever becomes
  // null mid-session, we know we're chasing a use-after-free.
- if (d_astBuffer == nullptr || astInstructionCount <= 0) {
-  PLUTO_LOG("generateChunkNoiseInto: no AST uploaded at call=%d chunk=%d,%d.",
+ if (d_astBuffer == nullptr) {
+  PLUTO_LOG("generateChunkNoiseInto: d_astBuffer is NULL at call=%d chunk=%d,%d — kernel will fall back to 0.0 density.",
             callNumber, chunkX, chunkZ);
-  releaseChunkGenContext(ctx);
-  return false;
- }
-
- const size_t requiredRegBytes = astRegisterBytesFor(astInstructionCount, PLUTONIUM_DENSITY_CELL_COUNT);
- if (requiredRegBytes == 0 || ctx->astRegisterCapacityBytes < requiredRegBytes) {
-  PLUTO_LOG("generateChunkNoiseInto: AST register scratch too small at call=%d chunk=%d,%d (%zu < %zu).",
-            callNumber, chunkX, chunkZ, ctx->astRegisterCapacityBytes, requiredRegBytes);
-  releaseChunkGenContext(ctx);
-  return false;
  }
 
  int cellBlocks = (PLUTONIUM_DENSITY_CELL_COUNT + PLUTONIUM_WORLDGEN_THREADS_PER_BLOCK - 1) / PLUTONIUM_WORLDGEN_THREADS_PER_BLOCK;
  evaluateDensityCellsKernel<<<cellBlocks, PLUTONIUM_WORLDGEN_THREADS_PER_BLOCK, 0, ctx->stream>>>(
-  ctx->d_densityCells, chunkX, chunkZ, seed, d_astBuffer, ctx->d_astRegisters, PLUTONIUM_DENSITY_CELL_COUNT);
+  ctx->d_densityCells, chunkX, chunkZ, seed, d_astBuffer, ctx->d_astRegisters);
  cudaError_t launchErr = cudaGetLastError();
  if (launchErr != cudaSuccess) {
   PLUTO_LOG("generateChunkNoiseInto density launch error (call=%d chunk=%d,%d): %s",
@@ -1316,15 +1203,8 @@ bool ComputeEngine::evaluateChunkDensityCells(int chunkX, int chunkZ, long seed,
  }
 
  std::shared_lock<std::shared_mutex> astLock(astBufferMutex);
- if (!d_astBuffer || astInstructionCount <= 0) {
+ if (!d_astBuffer) {
   PLUTO_LOG("evaluateChunkDensityCells: no AST uploaded.");
-  releaseChunkGenContext(ctx);
-  return false;
- }
- const size_t requiredRegBytes = astRegisterBytesFor(astInstructionCount, PLUTONIUM_DENSITY_CELL_COUNT);
- if (requiredRegBytes == 0 || ctx->astRegisterCapacityBytes < requiredRegBytes) {
-  PLUTO_LOG("evaluateChunkDensityCells: AST register scratch too small (%zu < %zu).",
-            ctx->astRegisterCapacityBytes, requiredRegBytes);
   releaseChunkGenContext(ctx);
   return false;
  }
@@ -1333,7 +1213,7 @@ bool ComputeEngine::evaluateChunkDensityCells(int chunkX, int chunkZ, long seed,
   (PLUTONIUM_DENSITY_CELL_COUNT + PLUTONIUM_WORLDGEN_THREADS_PER_BLOCK - 1) /
   PLUTONIUM_WORLDGEN_THREADS_PER_BLOCK;
  evaluateDensityCellsKernel<<<cellBlocks, PLUTONIUM_WORLDGEN_THREADS_PER_BLOCK, 0, ctx->stream>>>(
-  ctx->d_densityCells, chunkX, chunkZ, seed, d_astBuffer, ctx->d_astRegisters, PLUTONIUM_DENSITY_CELL_COUNT);
+  ctx->d_densityCells, chunkX, chunkZ, seed, d_astBuffer, ctx->d_astRegisters);
  cudaError_t launchErr = cudaGetLastError();
  if (launchErr != cudaSuccess) {
   PLUTO_LOG("evaluateChunkDensityCells launch error (chunk=%d,%d): %s",
@@ -1377,23 +1257,17 @@ bool ComputeEngine::evaluateDensityPoints(const int32_t* coordsXYZ, double* outV
  cudaSetDevice(s_deviceIndex);
 
  std::shared_lock<std::shared_mutex> astLock(astBufferMutex);
- if (!d_astBuffer || astInstructionCount <= 0) {
+ if (!d_astBuffer) {
   PLUTO_LOG("evaluateDensityPoints: no AST uploaded.");
   return false;
  }
- const int instructionCount = astInstructionCount;
 
  int32_t* d_coords = nullptr;
  double* d_out = nullptr;
  double* d_regs = nullptr;
  const size_t coordBytes = (size_t)count * 3u * sizeof(int32_t);
  const size_t outBytes = (size_t)count * sizeof(double);
- const size_t regBytes = astRegisterBytesFor(instructionCount, count);
- if (regBytes == 0) {
-  PLUTO_LOG("evaluateDensityPoints: register size overflow (%d instructions x %d points).",
-            instructionCount, count);
-  return false;
- }
+ const size_t regBytes = (size_t)count * (size_t)PLUTONIUM_MAX_AST_INSTRUCTIONS * sizeof(double);
 
  cudaError_t err = cudaMalloc((void**)&d_coords, coordBytes);
  if (err != cudaSuccess) {
@@ -1425,7 +1299,7 @@ bool ComputeEngine::evaluateDensityPoints(const int32_t* coordsXYZ, double* outV
 
  const int threads = 128;
  const int blocks = (count + threads - 1) / threads;
- evaluateDensityPointsKernel<<<blocks, threads>>>(d_coords, d_out, count, d_astBuffer, d_regs, count);
+ evaluateDensityPointsKernel<<<blocks, threads>>>(d_coords, d_out, count, d_astBuffer, d_regs);
  cudaError_t launchErr = cudaGetLastError();
  if (launchErr != cudaSuccess) {
   PLUTO_LOG("evaluateDensityPoints: kernel launch failed: %s", cudaGetErrorString(launchErr));
@@ -1463,15 +1337,9 @@ void* ComputeEngine::generateChunkOnGpu(int cx, int cz, long seed) {
  PLUTO_LOG("generateChunkOnGpu: buffers null, skipping.");
  return nullptr;
  }
- std::shared_lock<std::shared_mutex> astLock(astBufferMutex);
- if (!d_astBuffer || astInstructionCount <= 0) {
- PLUTO_LOG("generateChunkOnGpu: no AST uploaded, skipping.");
- return nullptr;
- }
  int threadsPerBlock = PLUTONIUM_WORLDGEN_THREADS_PER_BLOCK;
  int blocksPerGrid = (PLUTONIUM_DENSITY_CELL_COUNT + threadsPerBlock -1) / threadsPerBlock;
- evaluateDensityCellsKernel<<<blocksPerGrid, threadsPerBlock>>>(
- d_densityCells, cx, cz, seed, d_astBuffer, d_astRegisterBuffer, PLUTONIUM_DENSITY_CELL_COUNT);
+ evaluateDensityCellsKernel<<<blocksPerGrid, threadsPerBlock>>>(d_densityCells, cx, cz, seed, d_astBuffer, d_astRegisterBuffer);
  cudaError_t launchErr = cudaGetLastError();
  if (launchErr != cudaSuccess) {
  PLUTO_LOG("generateChunkOnGpu density launch error: %s", cudaGetErrorString(launchErr));
@@ -1662,42 +1530,9 @@ void ComputeEngine::uploadAST(const void* buffer, size_t size) {
   cudaFree(d_astBuffer);
   d_astBuffer = nullptr;
  }
- astInstructionCount = 0;
 
  if (!buffer || size == 0) {
   PLUTO_LOG("uploadAST: cleared AST buffer.");
-  return;
- }
-
- if (size < sizeof(PlutoniumBytecodeHeader)) {
-  PLUTO_LOG("uploadAST: bytecode too small (%zu bytes).", size);
-  return;
- }
-
- const auto* header = static_cast<const PlutoniumBytecodeHeader*>(buffer);
- if (header->magic != 0x504C544E || header->version != 1 ||
-     header->instructionStride != sizeof(PlutoniumInstruction) ||
-     header->instructionCount <= 0 || header->instructionCount > PLUTONIUM_MAX_AST_INSTRUCTIONS ||
-     header->dataPoolOffset < 0 || header->dataPoolBytes < 0) {
-  PLUTO_LOG("uploadAST: invalid header (magic=0x%x version=%d instructions=%d stride=%d dataOffset=%d dataBytes=%d).",
-            header->magic, header->version, header->instructionCount,
-            header->instructionStride, header->dataPoolOffset, header->dataPoolBytes);
-  return;
- }
-
- const size_t instructionBytes =
-  sizeof(PlutoniumBytecodeHeader) + (size_t)header->instructionCount * sizeof(PlutoniumInstruction);
- const size_t dataOffset = (size_t)header->dataPoolOffset;
- const size_t dataBytes = (size_t)header->dataPoolBytes;
- if (instructionBytes > size || dataOffset < instructionBytes ||
-     dataOffset > size || dataBytes > size - dataOffset) {
-  PLUTO_LOG("uploadAST: invalid bytecode bounds (size=%zu instructionsEnd=%zu dataOffset=%zu dataBytes=%zu).",
-            size, instructionBytes, dataOffset, dataBytes);
-  return;
- }
-
- if (!ensureAstRegisterCapacityLocked(header->instructionCount)) {
-  PLUTO_LOG("uploadAST: failed to prepare AST register scratch.");
   return;
  }
 
@@ -1716,9 +1551,7 @@ void ComputeEngine::uploadAST(const void* buffer, size_t size) {
   return;
  }
 
- astInstructionCount = header->instructionCount;
- PLUTO_LOG("uploadAST: copied %zu bytes to device AST buffer (%d instructions).",
-           size, astInstructionCount);
+ PLUTO_LOG("uploadAST: copied %zu bytes to device AST buffer.", size);
 }
 
 void ComputeEngine::updateBlockBatch(const void* buffer, int count) {
