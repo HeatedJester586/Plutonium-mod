@@ -57,6 +57,18 @@ public final class WorldgenBenchmarkCommand {
                                                                 IntegerArgumentType.getInteger(ctx, "chunkRadius"),
                                                                 IntegerArgumentType.getInteger(ctx, "centerChunkX"),
                                                                 IntegerArgumentType.getInteger(ctx, "centerChunkZ")))))))
+                        .then(Commands.literal("prefetch_status")
+                                .requires(src -> src.hasPermission(2))
+                                .executes(ctx -> {
+                                    ctx.getSource().sendSuccess(() -> Component.literal(String.format(
+                                            Locale.ROOT,
+                                            "[Plutonium] Prefetcher: tracking %d players, %d chunks queued, %d hits, %d misses.",
+                                            com.plutonium.backbone.common.ChunkPrefetcher.getPlayerCount(),
+                                            com.plutonium.backbone.common.ChunkPrefetcher.getQueuedTotal(),
+                                            com.plutonium.backbone.common.ChunkPrefetcher.getHits(),
+                                            com.plutonium.backbone.common.ChunkPrefetcher.getMisses())), false);
+                                    return 1;
+                                }))
         );
     }
 
