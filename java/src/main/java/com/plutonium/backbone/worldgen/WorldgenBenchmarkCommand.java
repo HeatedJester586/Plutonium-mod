@@ -69,6 +69,18 @@ public final class WorldgenBenchmarkCommand {
                                             com.plutonium.backbone.common.ChunkPrefetcher.getMisses())), false);
                                     return 1;
                                 }))
+                        .then(Commands.literal("midtick_status")
+                                .requires(src -> src.hasPermission(2))
+                                .executes(ctx -> {
+                                    long ticks = com.plutonium.backbone.common.MidTickChunkPump.getTotalTicks();
+                                    long tasks = com.plutonium.backbone.common.MidTickChunkPump.getTotalTasksRun();
+                                    double tasksPerTick = ticks > 0 ? (double) tasks / ticks : 0.0;
+                                    ctx.getSource().sendSuccess(() -> Component.literal(String.format(
+                                            Locale.ROOT,
+                                            "[Plutonium] MidTick: %d ticks, %d chunk tasks pumped (%.1f tasks/tick).",
+                                            ticks, tasks, tasksPerTick)), false);
+                                    return 1;
+                                }))
         );
     }
 
