@@ -196,18 +196,36 @@ public final class ChunkPrefetcher {
     private static boolean issuePrefetch(ServerLevel level, long packedChunk) {
         int cx = unpackX(packedChunk);
         int cz = unpackZ(packedChunk);
+        long startNs = System.nanoTime();
         try {
             ServerChunkCache cache = level.getChunkSource();
             // getChunk(..., true) bounces this off-thread call through the
             // main thread processor and returns once the chunk reaches the
             // requested status. The chunk worker pool does the actual gen.
             ChunkAccess chunk = cache.getChunk(cx, cz, ChunkStatus.FULL, true);
+            long elapsedNs = System.nanoTime() - startNs;
             if (chunk != null) {
-                PREFETCH_HITS.incrementAndGet();
+                long hits = PREFETCH_HITS.incrementAndGet();
+                // Verbose per-prefetch logging for the first few, then every 32nd
+                // hit so we don't drown the log under a long flight.
+                if (hits <= 8 || (hits & 31) == 0) {
+                    LOGGER.info("[Plutonium/Prefetch] hit #{} chunk ({},{}) in {} ms (dim={}).",
+                            hits, cx, cz,
+                            String.format(java.util.Locale.ROOT, "%.2f", elapsedNs / 1_000_000.0),
+                            level.dimension().location());
+                }
                 return true;
             }
+            long misses = PREFETCH_MISSES.incrementAndGet();
+            if (misses <= 8 || (misses & 31) == 0) {
+                LOGGER.warn("[Plutonium/Prefetch] miss #{} chunk ({},{}) after {} ms (chunk returned null).",
+                        misses, cx, cz,
+                        String.format(java.util.Locale.ROOT, "%.2f", elapsedNs / 1_000_000.0));
+            }
         } catch (Throwable t) {
-            PREFETCH_MISSES.incrementAndGet();
+            long misses = PREFETCH_MISSES.incrementAndGet();
+            LOGGER.warn("[Plutonium/Prefetch] miss #{} chunk ({},{}) threw {}: {}",
+                    misses, cx, cz, t.getClass().getSimpleName(), t.getMessage());
         }
         return false;
     }
@@ -241,6 +259,9 @@ public final class ChunkPrefetcher {
                     new net.minecraft.resources.ResourceLocation(dimensionId));
         }
 
+        private long lastVelocityLogNanos = 0L;
+        private static final long VELOCITY_LOG_INTERVAL_NS = 5_000_000_000L;
+
         synchronized void update(ServerLevel level, double x, double z) {
             currentX = x;
             currentZ = z;
@@ -249,6 +270,19 @@ public final class ChunkPrefetcher {
                 double dz = z - lastZ;
                 velX = VELOCITY_SMOOTHING * velX + (1.0 - VELOCITY_SMOOTHING) * dx;
                 velZ = VELOCITY_SMOOTHING * velZ + (1.0 - VELOCITY_SMOOTHING) * dz;
+                // Log velocity once every 5s when moving fast enough to prefetch.
+                if (hasMeaningfulVelocity()) {
+                    long now = System.nanoTime();
+                    if (now - lastVelocityLogNanos > VELOCITY_LOG_INTERVAL_NS) {
+                        lastVelocityLogNanos = now;
+                        double speed = Math.sqrt(velX * velX + velZ * velZ);
+                        LOGGER.info("[Plutonium/Prefetch] velocity={} b/tick ({} b/s), queue={}, dim={}.",
+                                String.format(java.util.Locale.ROOT, "%.2f", speed),
+                                String.format(java.util.Locale.ROOT, "%.1f", speed * 20.0),
+                                queue.size(),
+                                dimensionId);
+                    }
+                }
             }
             lastX = x;
             lastZ = z;
