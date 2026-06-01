@@ -11,7 +11,12 @@
     "ThreadedLevelLightEngineMixin"
   ],
   "client": [
-    "VideoSettingsScreenMixin"
+    "VideoSettingsScreenMixin",
+    "LevelRendererTerrainTimingMixin",
+    "LevelRendererAccessor",
+    "RenderChunkInfoAccessor",
+    "VertexBufferAccessor",
+    "ChunkRenderDispatcherUploadMixin"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -4,5 +4,7 @@
   "plutonium.options.mesh_profile": "Mesh Quality",
   "plutonium.options.lod_start_distance": "LOD Start Distance",
   "plutonium.options.cpu_threads": "Builder Threads",
-  "plutonium.options.backbone_renderer": "Backbone Renderer"
+  "plutonium.options.backbone_renderer": "Backbone Renderer",
+  "key.categories.plutonium": "Plutonium",
+  "key.plutonium.terrain_dump": "Dump Terrain Profile"
 }
