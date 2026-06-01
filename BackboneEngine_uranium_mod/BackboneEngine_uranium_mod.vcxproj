@@ -143,6 +143,7 @@
     </Link>
     <CudaCompile>
       <GenerateRelocatableDeviceCode>true</GenerateRelocatableDeviceCode>
+      <Runtime>MT</Runtime>
       <AdditionalOptions>--allow-unsupported-compiler %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
     <ProjectReference>
@@ -154,6 +155,7 @@
       <WarningLevel>Level3</WarningLevel>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;BACKBONEENGINEURANIUMMOD_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -173,6 +175,7 @@
     </Link>
     <CudaCompile>
       <GenerateRelocatableDeviceCode>true</GenerateRelocatableDeviceCode>
+      <Runtime>MT</Runtime>
       <AdditionalOptions>--allow-unsupported-compiler %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
     <ProjectReference>

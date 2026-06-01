@@ -16,7 +16,8 @@
     "LevelRendererAccessor",
     "RenderChunkInfoAccessor",
     "VertexBufferAccessor",
-    "ChunkRenderDispatcherUploadMixin"
+    "ChunkRenderDispatcherUploadMixin",
+    "LevelRendererSolidLayerMixin"
   ],
   "injectors": {
     "defaultRequire": 1

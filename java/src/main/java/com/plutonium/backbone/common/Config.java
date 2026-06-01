@@ -4,6 +4,11 @@ import net.minecraftforge.common.ForgeConfigSpec;
 
 public final class Config {
 
+    public enum ChunkBuilder {
+        CPU,
+        NATIVE
+    }
+
     public static final ForgeConfigSpec CLIENT_SPEC;
     public static final Client CLIENT;
 
@@ -18,6 +23,7 @@ public final class Config {
         public final ForgeConfigSpec.IntValue cpuThreads;
         public final ForgeConfigSpec.BooleanValue experimentalGpuChunkGen;
         public final ForgeConfigSpec.BooleanValue unsafeGpuWorldgen;
+        public final ForgeConfigSpec.ConfigValue<String> chunkBuilder;
 
         Client(ForgeConfigSpec.Builder b) {
             b.push("plutonium");
@@ -38,6 +44,12 @@ public final class Config {
                             Keep this false for normal gameplay. When false, vanilla worldgen is used
                             even if experimentalGpuChunkGen is enabled in an old config file.""")
                     .define("unsafeGpuWorldgen", false);
+            chunkBuilder = b
+                    .comment("""
+                            Terrain renderer/mesher.
+                            CPU - vanilla rendering (default).
+                            NATIVE - Plutonium's C++ mesher + MultiDrawIndirect renderer (experimental).""")
+                    .define("chunkBuilder", ChunkBuilder.CPU.name());
             b.pop();
         }
     }
@@ -56,6 +68,18 @@ public final class Config {
         } catch (Throwable ignored) {
             return false;
         }
+    }
+
+    public static ChunkBuilder getChunkBuilder() {
+        try {
+            return ChunkBuilder.valueOf(CLIENT.chunkBuilder.get().toUpperCase());
+        } catch (Throwable ignored) {
+            return ChunkBuilder.CPU;
+        }
+    }
+
+    public static void setChunkBuilder(ChunkBuilder mode) {
+        CLIENT.chunkBuilder.set(mode.name());
     }
 
     private Config() {
