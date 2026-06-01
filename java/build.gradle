@@ -73,6 +73,11 @@ dependencies {
 
     // Mixin annotation processor
     annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+
+    // GPU worldgen via OpenCL — bindings only; LWJGL core 3.3.1 + natives are
+    // already provided by MC 1.20.1, and OpenCL itself is loaded from the system
+    // ICD (the GPU driver). No native DLL of our own — this replaces the CUDA path.
+    implementation('org.lwjgl:lwjgl-opencl:3.3.1') { transitive = false }
 }
 
 // Mixin configuration
